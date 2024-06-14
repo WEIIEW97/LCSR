@@ -1,0 +1,14 @@
+data/
+tests/
+
+*.html
+
+**/__pycache__
+
+*.ipynb
+
+build/
+dist/
+
+.vscode
+.cache
