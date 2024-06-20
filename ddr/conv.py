@@ -3,6 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
+from pad2d_op import pad2d, pad2dT
+from typing import Optional, List
+
 __all__ = ['Conv2d', 'ConvScale2d', 'ConvScaleTranspose2d']
 
 class Pad2DTranspose(nn.Module):
@@ -21,7 +24,7 @@ class Pad2DTranspose(nn.Module):
 class Conv2d(torch.nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=3, invariant=False,
                  stride=1, dilation=1, groups=1, bias=False, 
-                 zero_mean=False, bound_norm=False, pad=True):
+                 zero_mean=False, bound_norm=False, pad=True, padding_mode='symmetric'):
         super(Conv2d, self).__init__()
 
         self.in_channels = in_channels
@@ -31,19 +34,20 @@ class Conv2d(torch.nn.Module):
         self.stride = stride
         self.dilation = dilation
         self.groups = groups
-        self.bias = nn.Parameter(torch.zeros(out_channels)) if bias else None
+        self.bias = torch.nn.Parameter(torch.zeros(out_channels)) if bias else None
         self.zero_mean = zero_mean
         self.bound_norm = bound_norm
         self.padding = 0
         self.pad = pad
+        self.is_KT = False  # is this a standar Op or used for ConvScaleTranspose2d?
 
         # add the parameter
         if self.invariant:
             assert self.kernel_size == 3
-            self.weight = nn.Parameter(torch.empty(out_channels, in_channels, 1,  3))
+            self.weight = torch.nn.Parameter(torch.empty(out_channels, in_channels, 1,  3))
             self.register_buffer('mask', torch.from_numpy(np.asarray([1,4,4], dtype=np.float32)[None, None, None, :]))
         else:
-            self.weight = nn.Parameter(torch.empty(out_channels, in_channels, self.kernel_size,  self.kernel_size))
+            self.weight = torch.nn.Parameter(torch.empty(out_channels, in_channels, self.kernel_size,  self.kernel_size))
             self.register_buffer('mask', torch.from_numpy(np.ones((self.kernel_size, self.kernel_size), dtype=np.float32)[None, None, :, :]))
         # insert them using a normal distribution
         torch.nn.init.normal_(self.weight.data, 0.0, np.sqrt(1/np.prod(in_channels*kernel_size**2)))
@@ -72,7 +76,7 @@ class Conv2d(torch.nn.Module):
             # initially call the projection
             self.weight.proj(True)
 
-    def get_weight(self):
+    def _get_weight(self):
         if self.invariant:
             weight = torch.empty(self.out_channels, self.in_channels, self.kernel_size, self.kernel_size, device=self.weight.device)
             weight[:,:,1,1] = self.weight[:,:,0,0]
@@ -83,38 +87,51 @@ class Conv2d(torch.nn.Module):
             weight = self.weight
         return weight
 
-    def forward(self, x):
+    def get_weight(self):
+        return self._get_weight()
+
+    def _forward(self, x):
         # construct the kernel
         weight = self.get_weight()
         # then pad
         pad = weight.shape[-1]//2
         if self.pad and pad > 0:
-            x = F.pad(x, (pad,pad,pad,pad), mode='reflect')
-            # x = optoth.pad2d.pad2d(x, (pad,pad,pad,pad), mode='symmetric')
+            x = pad2d(x, (pad,pad,pad,pad), mode='symmetric')
+            # x = F.pad(x, (pad,pad,pad,pad,), mode='reflect')
         # compute the convolution
-        return F.conv2d(x, weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
+        bias = None if self.is_KT else self.bias
+        return torch.nn.functional.conv2d(x, weight, bias, self.stride, self.padding, self.dilation, self.groups)
 
-    def backward(self, x, output_shape=None):
+    def _backward(self, x:torch.Tensor, output_shape:Optional[List[int]]=None):
         # construct the kernel
         weight = self.get_weight()
 
         # determine the output padding
+        output_padding: List[int] = []
         if not output_shape is None:
-            output_padding = (
+            output_padding = [
                 output_shape[2] - ((x.shape[2]-1)*self.stride+1),
                 output_shape[3] - ((x.shape[3]-1)*self.stride+1)
-            )
+            ]
         else:
-            output_padding = 0
+            output_padding = [0, 0]
 
         # compute the convolution
-        x = F.conv_transpose2d(x, weight, self.bias, self.stride, self.padding, output_padding, self.groups, self.dilation)
+        bias = self.bias if self.is_KT else None
+        x = torch.nn.functional.conv_transpose2d(input=x, weight=weight, bias=bias,stride=self.stride, padding=self.padding, output_padding=output_padding, groups=self.groups, dilation=self.dilation)
+        # x = torch.nn.functional.conv_transpose2d(x, weight, bias, self.stride, self.padding, output_padding, self.groups, self.dilation)
         pad = weight.shape[-1]//2
         if self.pad and pad > 0:
-            pad2d_t = Pad2DTranspose((pad,pad,pad,pad))
-            x = pad2d_t(x)
-            # x = optoth.pad2d.pad2d_transpose(x, (pad,pad,pad,pad), mode='symmetric')
+            x = pad2dT(x, (pad,pad,pad,pad), mode='symmetric')
+            # pad2dT = Pad2DTranspose((pad,pad,pad,pad))
+            # x = pad2dT(x)   # TODO: is it the same?
         return x
+
+    def forward(self, x):
+        return self._forward(x)
+
+    def backward(self, x, output_shape: Optional[List[int]]=None):
+        return self._backward(x, output_shape)
 
     def extra_repr(self):
         s = "({out_channels}, {in_channels}, {kernel_size}), invariant={invariant}"
@@ -150,11 +167,11 @@ class ConvScale2d(Conv2d):
             self.register_buffer('blur', torch.from_numpy(np_k))
 
     def get_weight(self):
-        weight = super().get_weight()
+        weight = self._get_weight()
         if self.stride > 1:
             weight = weight.reshape(-1, 1, self.kernel_size, self.kernel_size)
             for i in range(self.stride//2): 
-                weight = nn.functional.conv2d(weight, self.blur, padding=4)
+                weight = torch.nn.functional.conv2d(weight, self.blur, padding=4)
             weight = weight.reshape(self.out_channels, self.in_channels, self.kernel_size+2*self.stride, self.kernel_size+2*self.stride)
         return weight
 
@@ -166,9 +183,11 @@ class ConvScaleTranspose2d(ConvScale2d):
             in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, 
             invariant=invariant, groups=groups, stride=stride, bias=bias, 
             zero_mean=zero_mean, bound_norm=bound_norm)
+        self.is_KT=True
+        self.bias = torch.nn.Parameter(torch.zeros(in_channels)) if bias else None
 
-    def forward(self, x, output_shape):
-        return super().backward(x, output_shape)
+    def forward(self, x:torch.Tensor, output_shape:List[int]):
+        return self._backward(x, output_shape)
 
     def backward(self, x):
-        return super().forward(x)
+        return self._forward(x)
