@@ -1,0 +1,28 @@
+import os
+from os.path import join, normpath
+from glob import glob
+from setuptools import setup
+from torch.utils.cpp_extension import BuildExtension
+
+cmake_src_dir=normpath("${CMAKE_CURRENT_SOURCE_DIR}")
+cmake_install_prefix=normpath("${CMAKE_INSTALL_PREFIX}")
+
+# cmake later calls this file, and the setup function installs the into the current python environment
+setup(
+    name='pad2d_op_v1',
+    version='1.0',
+    author="Markus Hofinger, Florian Hubner",
+    author_email="markus.hofinger@icg.tugraz.at",
+
+    description='A Pytorch pad2d operator with hermitian transpose',
+    # Requirements
+    python_requires=">=3, <4",
+    packages=["pad2d_op"],
+    package_dir={"pad2d_op":   join(cmake_src_dir, "pad2d_op"),},
+    data_files=[("pad2d_op/include", glob(join(cmake_install_prefix, "include", "*"))),
+                ("pad2d_op", glob(join(cmake_install_prefix, "lib", "*"))),
+                ("pad2d_op", glob(join(cmake_install_prefix, "bin", "*")))
+               ],
+    cmdclass={"build_ext": BuildExtension.with_options(no_python_abi_suffix=True)},
+)
+

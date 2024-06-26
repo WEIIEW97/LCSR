@@ -6,7 +6,7 @@ import numpy as np
 from pad2d_op import pad2d, pad2dT
 from typing import Optional, List
 
-__all__ = ['Conv2d', 'ConvScale2d', 'ConvScaleTranspose2d']
+__all__ = ['Pad2DTranspose', 'Conv2d', 'ConvScale2d', 'ConvScaleTranspose2d']
 
 class Pad2DTranspose(nn.Module):
     def __init__(self, padding):

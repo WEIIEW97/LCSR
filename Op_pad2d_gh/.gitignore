@@ -1,0 +1,14 @@
+__pycache__/
+.egg-info
+.eggs
+.vscode/
+*.egg-info
+*.pt
+*.so
+build
+build_cmake
+build*/
+dist
+install
+python_usage_examples/*
+test_standalone_cpp/build

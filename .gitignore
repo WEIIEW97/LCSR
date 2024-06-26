@@ -12,3 +12,8 @@ dist/
 
 .vscode
 .cache
+
+# for nested directories
+**build
+**dist
+**.egg-info
