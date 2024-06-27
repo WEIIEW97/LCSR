@@ -369,6 +369,7 @@ class TDV(Regularizer):
     total deep variation (TDV) regularizer
     """
 
+    # potential referes to the negative log-likelihood
     @staticmethod
     def potential_linear(x):
         return x
